@@ -37,9 +37,9 @@ type ThreadInstance = any;
 
 /**
  * Map bridge permission modes to Codex approval policies.
- * - 'acceptEdits' (code mode) → 'on-failure' (auto-approve most things)
- * - 'plan' → 'on-request' (ask before executing)
- * - 'default' (ask mode) → 'on-request'
+ * - 'acceptEdits' (code mode) -> 'on-failure' (auto-approve most things)
+ * - 'plan' -> 'on-request' (ask before executing)
+ * - 'default' (ask mode) -> 'on-request'
  */
 function toApprovalPolicy(permissionMode?: string): string {
   switch (permissionMode) {
@@ -50,6 +50,31 @@ function toApprovalPolicy(permissionMode?: string): string {
   }
 }
 
+function resolveApprovalPolicy(permissionMode?: string): string {
+  const configured = process.env.CTI_CODEX_APPROVAL_POLICY;
+  if (configured) {
+    if (['untrusted', 'on-failure', 'on-request', 'never'].includes(configured)) {
+      return configured;
+    }
+    console.warn(`[codex-provider] Ignoring invalid CTI_CODEX_APPROVAL_POLICY="${configured}"`);
+  }
+  if (process.env.CTI_AUTO_APPROVE === 'true') {
+    return 'never';
+  }
+  return toApprovalPolicy(permissionMode);
+}
+
+function resolveSandboxMode(): string | undefined {
+  const configured = process.env.CTI_CODEX_SANDBOX_MODE;
+  if (configured) {
+    if (['read-only', 'workspace-write', 'danger-full-access'].includes(configured)) {
+      return configured;
+    }
+    console.warn(`[codex-provider] Ignoring invalid CTI_CODEX_SANDBOX_MODE="${configured}"`);
+  }
+  return process.env.CTI_AUTO_APPROVE === 'true' ? 'danger-full-access' : undefined;
+}
+
 /** Whether to forward bridge model to Codex CLI. Default: false (use Codex current/default model). */
 function shouldPassModelToCodex(): boolean {
   return process.env.CTI_CODEX_PASS_MODEL === 'true';
@@ -58,6 +83,17 @@ function shouldPassModelToCodex(): boolean {
 /** Allow Codex to run outside a trusted Git repository when explicitly enabled. */
 function shouldSkipGitRepoCheck(): boolean {
   return process.env.CTI_CODEX_SKIP_GIT_REPO_CHECK === 'true';
+}
+
+function resolveCodexServiceTier(): 'fast' | 'flex' {
+  const value = process.env.CTI_CODEX_SERVICE_TIER;
+  if (value === 'fast' || value === 'flex') {
+    return value;
+  }
+  if (value) {
+    console.warn(`[codex-provider] Ignoring invalid CTI_CODEX_SERVICE_TIER="${value}", using fast`);
+  }
+  return 'fast';
 }
 
 function shouldRetryFreshThread(message: string): boolean {
@@ -101,11 +137,13 @@ export class CodexProvider implements LLMProvider {
       || process.env.OPENAI_API_KEY
       || undefined;
     const baseUrl = process.env.CTI_CODEX_BASE_URL || undefined;
+    const serviceTier = resolveCodexServiceTier();
 
     const CodexClass = this.sdk.Codex;
     this.codex = new CodexClass({
       ...(apiKey ? { apiKey } : {}),
       ...(baseUrl ? { baseUrl } : {}),
+      config: { service_tier: serviceTier },
     });
 
     return { sdk: this.sdk, codex: this.codex };
@@ -125,13 +163,15 @@ export class CodexProvider implements LLMProvider {
             const inMemoryThreadId = self.threadIds.get(params.sessionId);
             let savedThreadId = inMemoryThreadId || params.sdkSessionId || undefined;
 
-            const approvalPolicy = toApprovalPolicy(params.permissionMode);
+            const approvalPolicy = resolveApprovalPolicy(params.permissionMode);
+            const sandboxMode = resolveSandboxMode();
             const passModel = shouldPassModelToCodex();
 
             const threadOptions: Record<string, unknown> = {
               ...(passModel && params.model ? { model: params.model } : {}),
               ...(params.workingDirectory ? { workingDirectory: params.workingDirectory } : {}),
               ...(shouldSkipGitRepoCheck() ? { skipGitRepoCheck: true } : {}),
+              ...(sandboxMode ? { sandboxMode } : {}),
               approvalPolicy,
             };
 

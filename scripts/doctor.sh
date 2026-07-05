@@ -243,12 +243,14 @@ if [ "$CTI_RUNTIME" = "codex" ] || [ "$CTI_RUNTIME" = "auto" ]; then
   fi
 
   # Check Codex auth: any of CTI_CODEX_API_KEY / CODEX_API_KEY / OPENAI_API_KEY,
-  # or `codex auth status` showing logged-in (interactive login).
+  # or Codex CLI login status showing logged-in (interactive login).
   CODEX_AUTH=1
   if [ -n "${CTI_CODEX_API_KEY:-}" ] || [ -n "${CODEX_API_KEY:-}" ] || [ -n "${OPENAI_API_KEY:-}" ]; then
     CODEX_AUTH=0
+  elif [ -f "$CONFIG_FILE" ] && grep -qE "^(CTI_CODEX_API_KEY|CODEX_API_KEY|OPENAI_API_KEY)=" "$CONFIG_FILE" 2>/dev/null; then
+    CODEX_AUTH=0
   elif command -v codex &>/dev/null; then
-    CODEX_AUTH_OUT=$(codex auth status 2>&1 || true)
+    CODEX_AUTH_OUT=$(codex login status 2>&1 || codex auth status 2>&1 || true)
     if echo "$CODEX_AUTH_OUT" | grep -qiE 'logged.in|authenticated'; then
       CODEX_AUTH=0
     fi
@@ -286,7 +288,7 @@ fi
 
 # --- config.env permissions ---
 if [ -f "$CONFIG_FILE" ]; then
-  PERMS=$(stat -f "%Lp" "$CONFIG_FILE" 2>/dev/null || stat -c "%a" "$CONFIG_FILE" 2>/dev/null || echo "unknown")
+  PERMS=$(stat -c "%a" "$CONFIG_FILE" 2>/dev/null || stat -f "%Lp" "$CONFIG_FILE" 2>/dev/null || echo "unknown")
   if [ "$PERMS" = "600" ]; then
     check "config.env permissions are 600" 0
   else
@@ -424,11 +426,12 @@ fi
 
 # --- Recent errors in log ---
 if [ -f "$LOG_FILE" ]; then
-  ERROR_COUNT=$(tail -50 "$LOG_FILE" | grep -ciE 'ERROR|Fatal' || true)
+  RECENT_LOG=$(awk '/\[claude-to-im\] Starting bridge/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' "$LOG_FILE")
+  ERROR_COUNT=$(printf "%s" "$RECENT_LOG" | grep -ciE 'ERROR|Fatal' || true)
   if [ "$ERROR_COUNT" -eq 0 ]; then
-    check "No recent errors in log (last 50 lines)" 0
+    check "No errors since last bridge start" 0
   else
-    check "No recent errors in log (found $ERROR_COUNT ERROR/Fatal lines)" 1
+    check "No errors since last bridge start (found $ERROR_COUNT ERROR/Fatal lines)" 1
   fi
 else
   check "Log file exists (not yet created)" 0
